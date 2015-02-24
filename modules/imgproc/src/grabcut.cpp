@@ -44,9 +44,19 @@
 #include "gcgraph.hpp"
 #include <limits>
 
-#include <iostream>
+#define _USE_MATH_DEFINES
+#include <math.h>
 
 using namespace cv;
+
+#define FILTERS 13
+#define CHANNELS 14
+#define DOUBLE_CHANNELS 28
+
+typedef Vec<float, FILTERS> Vecf_f;
+typedef Vec<float, DOUBLE_CHANNELS> Vecf_dc;
+typedef Vec<double, CHANNELS> Vecd_c;
+typedef Vec<double, DOUBLE_CHANNELS> Vecd_dc;
 
 /*
 This is implementation of image segmentation algorithm GrabCut described in
@@ -228,21 +238,21 @@ void GMM::calcInverseCovAndDeterm( int ci )
 }
 
 /*
- GMM - Gaussian Mixture Model 6 dimensional
+ GMM - Gaussian Mixture Model DOUBLE_CHANNELS dimensional
 */
-class GMM6d
+class GMM_dc
 {
 public:
     static const int componentsCount = 5;
-	static const int dimension = 6;
+	static const int dimension = DOUBLE_CHANNELS;
 
-    GMM6d( Mat& _model );
-    double operator()( const Vec6d color ) const;
-    double operator()( int ci, const Vec6d color ) const;
-    int whichComponent( const Vec6d color ) const;
+    GMM_dc( Mat& _model );
+    double operator()( const Vecd_dc color ) const;
+    double operator()( int ci, const Vecd_dc color ) const;
+    int whichComponent( const Vecd_dc color ) const;
 
     void initLearning();
-    void addSample( int ci, const Vec6d color );
+    void addSample( int ci, const Vecd_dc color );
     void endLearning();
 
 private:
@@ -260,7 +270,7 @@ private:
     int sampleCounts[componentsCount];
     int totalSampleCount;
 };
-GMM6d::GMM6d( Mat& _model )
+GMM_dc::GMM_dc( Mat& _model )
 {
     const int modelSize = dimension/*mean*/ + dimension*dimension/*covariance*/ + 1/*component weight*/;
     if( _model.empty() )
@@ -285,7 +295,7 @@ GMM6d::GMM6d( Mat& _model )
         if( coefs[ci] > 0 )
              calcInverseCovAndDeterm( ci );
 }
-double GMM6d::operator()( const Vec6d color ) const
+double GMM_dc::operator()( const Vecd_dc color ) const
 {
     double res = 0;
 	// Sum of all components coefs * (
@@ -293,7 +303,7 @@ double GMM6d::operator()( const Vec6d color ) const
         res += coefs[ci] * (*this)(ci, color );
     return res;
 }
-double GMM6d::operator()( int ci, const Vec6d color ) const
+double GMM_dc::operator()( int ci, const Vecd_dc color ) const
 {
     double res = 0;
 	// If possibility exists
@@ -302,7 +312,7 @@ double GMM6d::operator()( int ci, const Vec6d color ) const
 		// Make sure Determ is not 0, the matrix is not singular
         CV_Assert( covDeterms[ci] != 0 );
 		// Find the difference of our color to the mean of that particular component
-        Vec6d diff = color;
+        Vecd_dc diff = color;
         double* m = mean + dimension*ci;
 		for (int i = 0; i < dimension; i++)
 			diff[i] -= m[i];
@@ -322,7 +332,7 @@ double GMM6d::operator()( int ci, const Vec6d color ) const
     }
     return res;
 }
-int GMM6d::whichComponent( const Vec6d color ) const
+int GMM_dc::whichComponent( const Vecd_dc color ) const
 {
     int k = 0;
     double max = 0;
@@ -338,7 +348,7 @@ int GMM6d::whichComponent( const Vec6d color ) const
     }
     return k;
 }
-void GMM6d::initLearning()
+void GMM_dc::initLearning()
 {
 	// Initialize every value we care about to 0
     for( int ci = 0; ci < componentsCount; ci++)
@@ -355,7 +365,7 @@ void GMM6d::initLearning()
     }
     totalSampleCount = 0;
 }
-void GMM6d::addSample( int ci, const Vec6d color )
+void GMM_dc::addSample( int ci, const Vecd_dc color )
 {
 	// Add to sums
 	for (int i = 0; i < dimension; i++)
@@ -368,7 +378,7 @@ void GMM6d::addSample( int ci, const Vec6d color )
     sampleCounts[ci]++;
     totalSampleCount++;
 }
-void GMM6d::endLearning()
+void GMM_dc::endLearning()
 {
 	// Learning is done
     const double variance = 0.01;
@@ -402,16 +412,16 @@ void GMM6d::endLearning()
 			c_mat.create(dimension, dimension, CV_64FC1);
 			for (int i = 0; i < dimension; i++)
 				for (int j = 0; j < dimension; j++)
-					c_mat.at<double>(i, j) = c[dimension*i+j];
+					c_mat.at<double>(i, j) = prods[ci][i][j]/n - m[i]*m[j];
 			
 			//double dtrm = c[0]*(c[4]*c[8]-c[5]*c[7]) - c[1]*(c[3]*c[8]-c[5]*c[6]) + c[2]*(c[3]*c[7]-c[4]*c[6]);
 			double dtrm = determinant(c_mat);
+
 			// And check for singular
-            //if( dtrm <= std::numeric_limits<double>::epsilon() )
-			if ( dtrm == 0 )
+			if ( dtrm <= std::numeric_limits<double>::epsilon() )
             {
-                // Adds the white noise to avoid singular covariance matrix.
-				// We change the diagonal
+                // Adds the white noise to avoid singular covariance matrix
+				// We change the diagonal. This is more so to avoid marginally negative determinant
 				for (int i = 0; i < dimension*dimension; i = i + dimension + 1)
 					c[i] += variance;
             }
@@ -420,7 +430,7 @@ void GMM6d::endLearning()
         }
     }
 }
-void GMM6d::calcInverseCovAndDeterm( int ci )
+void GMM_dc::calcInverseCovAndDeterm( int ci )
 {
     if( coefs[ci] > 0 )
     {
@@ -436,8 +446,9 @@ void GMM6d::calcInverseCovAndDeterm( int ci )
 				c_mat.at<double>(i, j) = c[dimension*i+j];
         //double dtrm =
         //      covDeterms[ci] = c[0]*(c[4]*c[8]-c[5]*c[7]) - c[1]*(c[3]*c[8]-c[5]*c[6]) + c[2]*(c[3]*c[7]-c[4]*c[6]);
+		// TO DO: Find out why in the hell Determ can be less than 0, although barely
 		covDeterms[ci] = determinant(c_mat);
-		CV_Assert( covDeterms[ci] > 0 );
+		CV_Assert(covDeterms[ci] > 0.0);
 
 		// Calculate inverse covariance matrix
 		Mat c_inv;
@@ -772,32 +783,32 @@ static void constructGCGraph( const Mat& img, const Mat& mask, const GMM& bgdGMM
 }
 
 //=============================[ 6D versions of above functions ]==============================
-static double calcBeta6d( const Mat& img )
+static double calcBeta_dc( const Mat& img )
 {
     double beta = 0;
     for( int y = 0; y < img.rows; y++ )
     {
         for( int x = 0; x < img.cols; x++ )
         {
-            Vec6d color = img.at<Vec6d>(y,x);
+            Vecd_dc color = img.at<Vecd_dc>(y,x);
             if( x>0 ) // left
             {
-                Vec6d diff = color - img.at<Vec6d>(y,x-1);
+                Vecd_dc diff = color - img.at<Vecd_dc>(y,x-1);
                 beta += diff.dot(diff);
             }
             if( y>0 && x>0 ) // upleft
             {
-                Vec6d diff = color - img.at<Vec6d>(y-1,x-1);
+                Vecd_dc diff = color - img.at<Vecd_dc>(y-1,x-1);
                 beta += diff.dot(diff);
             }
             if( y>0 ) // up
             {
-                Vec6d diff = color - img.at<Vec6d>(y-1,x);
+                Vecd_dc diff = color - img.at<Vecd_dc>(y-1,x);
                 beta += diff.dot(diff);
             }
             if( y>0 && x<img.cols-1) // upright
             {
-                Vec6d diff = color - img.at<Vec6d>(y-1,x+1);
+                Vecd_dc diff = color - img.at<Vecd_dc>(y-1,x+1);
                 beta += diff.dot(diff);
             }
         }
@@ -810,7 +821,7 @@ static double calcBeta6d( const Mat& img )
     return beta;
 }
 
-static void calcNWeights6d( const Mat& img, Mat& leftW, Mat& upleftW, Mat& upW, Mat& uprightW, double beta, double gamma )
+static void calcNWeights_dc( const Mat& img, Mat& leftW, Mat& upleftW, Mat& upW, Mat& uprightW, double beta, double gamma )
 {
 	// gamma is 50 and used for straight edges, gammaDivSqrt2 is used for diagonal ones
     const double gammaDivSqrt2 = gamma / std::sqrt(2.0f);
@@ -832,31 +843,31 @@ static void calcNWeights6d( const Mat& img, Mat& leftW, Mat& upleftW, Mat& upW, 
     {
         for( int x = 0; x < img.cols; x++ )
         {
-            Vec6d color = img.at<Vec6d>(y,x);
+            Vecd_dc color = img.at<Vecd_dc>(y,x);
             if( x-1>=0 ) // left
             {
-                Vec6d diff = color - img.at<Vec6d>(y,x-1);
+                Vecd_dc diff = color - img.at<Vecd_dc>(y,x-1);
                 leftW.at<double>(y,x) = gamma * exp(-beta*diff.dot(diff));
             }
             else
                 leftW.at<double>(y,x) = 0;
             if( x-1>=0 && y-1>=0 ) // upleft
             {
-                Vec6d diff = color - img.at<Vec6d>(y-1,x-1);
+                Vecd_dc diff = color - img.at<Vecd_dc>(y-1,x-1);
                 upleftW.at<double>(y,x) = gammaDivSqrt2 * exp(-beta*diff.dot(diff));
             }
             else
                 upleftW.at<double>(y,x) = 0;
             if( y-1>=0 ) // up
             {
-                Vec6d diff = color - img.at<Vec6d>(y-1,x);
+                Vecd_dc diff = color - img.at<Vecd_dc>(y-1,x);
                 upW.at<double>(y,x) = gamma * exp(-beta*diff.dot(diff));
             }
             else
                 upW.at<double>(y,x) = 0;
             if( x+1<img.cols && y-1>=0 ) // upright
             {
-                Vec6d diff = color - img.at<Vec6d>(y-1,x+1);
+                Vecd_dc diff = color - img.at<Vecd_dc>(y-1,x+1);
                 uprightW.at<double>(y,x) = gammaDivSqrt2 * exp(-beta*diff.dot(diff));
             }
             else
@@ -865,8 +876,7 @@ static void calcNWeights6d( const Mat& img, Mat& leftW, Mat& upleftW, Mat& upW, 
     }
 }
 
-// TO DO: Create 6-dimensional GMMs so thy can accept such samples
-static void initGMMs6d( const Mat& img, const Mat& mask, GMM6d& bgdGMM, GMM6d& fgdGMM )
+static void initGMMs_dc( const Mat& img, const Mat& mask, GMM_dc& bgdGMM, GMM_dc& fgdGMM )
 {
 	// Always 10 iterations, always clustering into 2 centers (logical)
     const int kMeansItCount = 10;
@@ -874,16 +884,16 @@ static void initGMMs6d( const Mat& img, const Mat& mask, GMM6d& bgdGMM, GMM6d& f
 
 	// Create vectors representing sumples and push our points into proper containers
     Mat bgdLabels, fgdLabels;
-    std::vector<Vec6f> bgdSamples, fgdSamples;
+    std::vector<Vecf_dc> bgdSamples, fgdSamples;
     Point p;
     for( p.y = 0; p.y < img.rows; p.y++ )
     {
         for( p.x = 0; p.x < img.cols; p.x++ )
         {
             if( mask.at<uchar>(p) == GC_BGD || mask.at<uchar>(p) == GC_PR_BGD )
-                bgdSamples.push_back( (Vec6f)img.at<Vec6d>(p) );
+                bgdSamples.push_back( (Vecf_dc)img.at<Vecd_dc>(p) );
             else // GC_FGD | GC_PR_FGD
-                fgdSamples.push_back( (Vec6f)img.at<Vec6d>(p) );
+                fgdSamples.push_back( (Vecf_dc)img.at<Vecd_dc>(p) );
         }
     }
 	// Standard debug, none should be empty
@@ -891,7 +901,7 @@ static void initGMMs6d( const Mat& img, const Mat& mask, GMM6d& bgdGMM, GMM6d& f
 	
 	// Transform vector of Vec3f into an actual 2D material
 	// Mat(int rows, int cols, int type, void* data, size_t step=AUTO_STEP) <- probably this one
-    Mat _bgdSamples( (int)bgdSamples.size(), 6, CV_32FC1, &bgdSamples[0][0] );
+    Mat _bgdSamples( (int)bgdSamples.size(), DOUBLE_CHANNELS, CV_32FC1, &bgdSamples[0][0] );
 	// Run the K-means algorythm
 	// (_data = bgdSamples, K=componentsCount(5), _bestLabels=bgdLabels(output),
 	//	TermCriteria, attempts=0, flags=kMeansType(2), _centers=noArray(default))
@@ -899,7 +909,7 @@ static void initGMMs6d( const Mat& img, const Mat& mask, GMM6d& bgdGMM, GMM6d& f
             TermCriteria( CV_TERMCRIT_ITER, kMeansItCount, 0.0), 0, kMeansType );
 
 	// Do the same for FGD...
-	Mat _fgdSamples( (int)fgdSamples.size(), 6, CV_32FC1, &fgdSamples[0][0] );
+	Mat _fgdSamples( (int)fgdSamples.size(), DOUBLE_CHANNELS, CV_32FC1, &fgdSamples[0][0] );
     kmeans( _fgdSamples, GMM::componentsCount, fgdLabels,
             TermCriteria( CV_TERMCRIT_ITER, kMeansItCount, 0.0), 0, kMeansType );
 
@@ -915,21 +925,21 @@ static void initGMMs6d( const Mat& img, const Mat& mask, GMM6d& bgdGMM, GMM6d& f
     fgdGMM.endLearning();
 }
 
-static void assignGMMsComponents6d( const Mat& img, const Mat& mask, const GMM6d& bgdGMM, const GMM6d& fgdGMM, Mat& compIdxs )
+static void assignGMMsComponents_dc( const Mat& img, const Mat& mask, const GMM_dc& bgdGMM, const GMM_dc& fgdGMM, Mat& compIdxs )
 {
     Point p;
     for( p.y = 0; p.y < img.rows; p.y++ )
     {
         for( p.x = 0; p.x < img.cols; p.x++ )
         {
-            Vec6d color = img.at<Vec6d>(p);
+            Vecd_dc color = img.at<Vecd_dc>(p);
             compIdxs.at<int>(p) = mask.at<uchar>(p) == GC_BGD || mask.at<uchar>(p) == GC_PR_BGD ?
                 bgdGMM.whichComponent(color) : fgdGMM.whichComponent(color);
         }
     }
 }
 
-static void learnGMMs6d( const Mat& img, const Mat& mask, const Mat& compIdxs, GMM6d& bgdGMM, GMM6d& fgdGMM )
+static void learnGMMs_dc( const Mat& img, const Mat& mask, const Mat& compIdxs, GMM_dc& bgdGMM, GMM_dc& fgdGMM )
 {
     bgdGMM.initLearning();
     fgdGMM.initLearning();
@@ -943,9 +953,9 @@ static void learnGMMs6d( const Mat& img, const Mat& mask, const Mat& compIdxs, G
                 if( compIdxs.at<int>(p) == ci )
                 {
                     if( mask.at<uchar>(p) == GC_BGD || mask.at<uchar>(p) == GC_PR_BGD )
-                        bgdGMM.addSample( ci, img.at<Vec6d>(p) );
+                        bgdGMM.addSample( ci, img.at<Vecd_dc>(p) );
                     else
-                        fgdGMM.addSample( ci, img.at<Vec6d>(p) );
+                        fgdGMM.addSample( ci, img.at<Vecd_dc>(p) );
                 }
             }
         }
@@ -954,7 +964,7 @@ static void learnGMMs6d( const Mat& img, const Mat& mask, const Mat& compIdxs, G
     fgdGMM.endLearning();
 }
 
-static void constructGCGraph6d( const Mat& img, const Mat& mask, const GMM6d& bgdGMM, const GMM6d& fgdGMM, double lambda,
+static void constructGCGraph_dc( const Mat& img, const Mat& mask, const GMM_dc& bgdGMM, const GMM_dc& fgdGMM, double lambda,
                        const Mat& leftW, const Mat& upleftW, const Mat& upW, const Mat& uprightW,
                        GCGraph<double>& graph )
 {
@@ -979,7 +989,7 @@ static void constructGCGraph6d( const Mat& img, const Mat& mask, const GMM6d& bg
         {
             // add node
             int vtxIdx = graph.addVtx();
-            Vec6d color = img.at<Vec6d>(p);
+            Vecd_dc color = img.at<Vecd_dc>(p);
 
             // set t-weights
 			// Note - which is sink and which is source has no meaning, just the segmentation
@@ -1054,12 +1064,8 @@ static void estimateSegmentation( GCGraph<double>& graph, Mat& mask )
 // Shrinking function, creates a material 10 times smaller
 Mat* shrink( const Mat& input, const int by )
 {
-	// First let us make sure the image can be correctly shrunk as given
-	if (div(input.rows,by).rem != 0 || div(input.cols,by).rem != 0)
-        CV_Error( CV_StsBadArg, "Input is of wrong size." );
-
 	// Create our shrunk Material
-	Mat* output = new Mat(input.rows/by, input.cols/by, CV_64FC(6));
+	Mat* output = new Mat( input.rows/by, input.cols/by, CV_64FC(DOUBLE_CHANNELS) );
 
 	// For each point in ouput image...
 	Point p_i; // Input iterator
@@ -1069,66 +1075,40 @@ Mat* shrink( const Mat& input, const int by )
         for( p_o.x = 0; p_o.x < output->cols; p_o.x++ )
 		{
 			// ...we take it's values (vector of 6 values, 3 colors and 3 standard deviations)
-			Vec6d& values = output->at<Vec6d>(p_o);
-			// And calculate these values using the area from input image. Wefirst calculate the means
-			values[0] = 0.0;
-			values[1] = 0.0;
-			values[2] = 0.0;
-			for ( p_i.y = by*p_o.y; p_i.y < by*(p_o.y+1); p_i.y++)
+			Vecd_dc& values = output->at<Vecd_dc>(p_o);
+			// ...initialize base values as 0
+			for (int i = 0; i < DOUBLE_CHANNELS; i++)
+				values[i] = 0.0;
+
+			// And calculate these values using the area from input image. We first calculate the means
+			for ( p_i.y = by*p_o.y; (p_i.y < by*(p_o.y+1)) && (p_i.y < input.rows); p_i.y++)
 			{
-				for ( p_i.x = by*p_o.x; p_i.x < by*(p_o.x+1); p_i.x++)
+				for ( p_i.x = by*p_o.x; (p_i.x < by*(p_o.x+1)) && (p_i.x < input.cols); p_i.x++)
 				{
-					Vec3d color = (Vec3d)input.at<Vec3b>(p_i);
-					values[0] += color.val[0];
-					values[1] += color.val[1];
-					values[2] += color.val[2];
+					Vecd_c color = input.at<Vecd_c>(p_i);
+					for (int i = 0; i < CHANNELS; i++)
+						values[i] += color.val[i];
 				}
 			}
-			values[0] /= by*by;
-			values[1] /= by*by;
-			values[2] /= by*by;
+			for (int i = 0; i < CHANNELS; i++)
+				values[i] /= by*by;
 			
 			// Then calculate the standard deviations
-			values[3] = 0.0;
-			values[4] = 0.0;
-			values[5] = 0.0;
-			for ( p_i.y = by*p_o.y; p_i.y < by*(p_o.y+1); p_i.y++)
+			for ( p_i.y = by*p_o.y; (p_i.y < by*(p_o.y+1)) && (p_i.y < input.rows); p_i.y++)
 			{
-				for ( p_i.x = by*p_o.x; p_i.x < by*(p_o.x+1); p_i.x++)
+				for ( p_i.x = by*p_o.x; (p_i.x < by*(p_o.x+1)) && (p_i.x < input.cols); p_i.x++)
 				{
-					Vec3d color = (Vec3d)input.at<Vec3b>(p_i);
-					values[3] += pow(values[0] - color.val[0], 2);
-					values[4] += pow(values[1] - color.val[1], 2);
-					values[5] += pow(values[2] - color.val[2], 2);
+					Vecd_c color = input.at<Vecd_c>(p_i);
+					for (int i = 0; i < CHANNELS; i++)
+						values[CHANNELS+i] += pow(values[i] - color.val[i], 2);
 				}
 			}
-			values[3] = sqrt(values[3] / (by*by));
-			values[4] = sqrt(values[4] / (by*by));
-			values[5] = sqrt(values[5] / (by*by));
+			for (int i = CHANNELS; i < DOUBLE_CHANNELS; i++)
+				values[i] = sqrt(values[i] / (by*by));
 		}
 	}
 
 	// And done!
-	return output;
-}
-
-// Function that creates a material of 3 rounded colors from shrunk means, as desired by GMMs
-Mat* round_shrunk(const Mat& mask)
-{
-	Mat* output = new Mat(mask.rows, mask.cols, CV_8UC3);
-	Point p;
-    for( p.y = 0; p.y < output->rows; p.y++ )
-    {
-        for( p.x = 0; p.x < output->cols; p.x++ )
-		{
-			Vec6d vm = mask.at<Vec6d>(p);
-			Vec3b& vo = output->at<Vec3b>(p);
-
-			vo[0] = (uchar)vm[0];
-			vo[1] = (uchar)vm[1];
-			vo[2] = (uchar)vm[2];
-		}
-	}
 	return output;
 }
 
@@ -1145,18 +1125,141 @@ void expandShrunkMat(const Mat& input, Mat& output, const int by)
 		{
 			uchar flag = input.at<uchar>(p_i);
 			// And set its value onto every single pixel from a corresponding area on output
-			for ( p_o.y = by*p_i.y; p_o.y < by*(p_i.y+1); p_o.y++)
-				for ( p_o.x = by*p_i.x; p_o.x < by*(p_i.x+1); p_o.x++)
+			for ( p_o.y = by*p_i.y; (p_o.y < by*(p_i.y+1)) && (p_o.y < output.rows); p_o.y++)
+				for ( p_o.x = by*p_i.x; (p_o.x < by*(p_i.x+1)) && (p_o.x < output.cols); p_o.x++)
 					output.at<uchar>(p_o) = flag;
 		}
 	}
 	// End of input for
 }
 
+// Change our base image into grayscale and expand it into n dimensions for further filtering
+Mat* grey_and_expand( const Mat& input )
+{
+	// Create output material of input size and n dimensions
+	Mat* output = new Mat(input.rows, input.cols, CV_64FC(CHANNELS));
+
+	// Calculate grayscale values
+	Point p;
+	for (p.y = 0; p.y < input.rows; p.y++)
+	{
+		for (p.x = 0; p.x < input.cols; p.x++)
+		{
+			const Vec3b vi = input.at<Vec3b>(p);
+			Vecd_c& vo = output->at<Vecd_c>(p);
+
+			// 1) (0.2126*R + 0.7152*G + 0.0722*B) <- Relative luminance according to wiki
+			// 2) (0.299*R + 0.587*G + 0.114*B) <- Suggested by W3C Working Draft
+			// 3) sqrt( 0.299*R^2 + 0.587*G^2 + 0.114*B^2 ) <- Photoshop does something close to this
+			// Calculate grayscale value, here we are using 3rd formula
+			vo[0] = sqrt( 0.299*vi[0]*vi[0] + 0.587*vi[1]*vi[1] + 0.114*vi[2]*vi[2] );
+			// Set all other values to the calculated value
+			for (int i = 1; i < CHANNELS; i++)
+				vo[i] = vo[0];
+		}
+	}
+
+	// All done, return the answer
+	return output;
+}
+
+// Create a single filter in accordance to
+// http://www.robots.ox.ac.uk/~vgg/research/texclass/filters.html
+void make_filter( Mat& f, const int sup, const int sigma, const int tau, const int which )
+{	
+	// Initialize
+	int hsup = (sup-1)/2;
+
+	// Calculate cos(...)*exp(...) part
+	float mean = 0.0;
+	float sum = 0.0;
+	Point p;
+	for (p.y = 0; p.y < f.rows; p.y++)
+	{
+		for (p.x = 0; p.x < f.cols; p.x++)
+		{
+			// Calculate our value of current fv part
+			Vecf_f& fv = f.at<Vecf_f>(p);
+			float r = sqrt( (float)((-hsup+p.x)*(-hsup+p.x) + (-hsup+p.y)*(-hsup+p.y)) );
+			fv[which] = cos((float)(r*(M_PI*tau/sigma))) * exp(-(r*r)/(2*sigma*sigma));
+		}
+	}
+
+	// Calculate mean
+	for (p.y = 0; p.y < f.rows; p.y++)
+	{
+		for (p.x = 0; p.x < f.cols; p.x++)
+		{
+			Vecf_f& fv = f.at<Vecf_f>(p);
+			mean += fv[which];
+		}
+	}
+	mean /= sup*sup;
+
+	// f=f-mean(f(:));
+	for (p.y = 0; p.y < f.rows; p.y++)
+	{
+		for (p.x = 0; p.x < f.cols; p.x++)
+		{
+			// Update the value of current fv part using the formulas above
+			Vecf_f& fv = f.at<Vecf_f>(p);
+			fv[which] -= mean;
+		}
+	}
+	
+	// Calculate sum
+	for (p.y = 0; p.y < f.rows; p.y++)
+	{
+		for (p.x = 0; p.x < f.cols; p.x++)
+		{
+			Vecf_f& fv = f.at<Vecf_f>(p);
+			sum += fv[which] > 0.f ? fv[which] : -fv[which];
+		}
+	}
+
+	// f/sum(abs(f(:)));
+	for (p.y = 0; p.y < f.rows; p.y++)
+	{
+		for (p.x = 0; p.x < f.cols; p.x++)
+		{
+			// Update the value of current fv part using the formulas above
+			Vecf_f& fv = f.at<Vecf_f>(p);
+			fv[which] /= sum;
+		}
+	}
+}
+
+// Create the Schmid filter bank in accordace to
+// http://www.robots.ox.ac.uk/~vgg/research/texclass/filters.html
+Mat* create_filters( const int size )
+{
+	// Initialize our filter bank material
+	Mat* output = new Mat( size, size, CV_32FC(FILTERS) );
+
+	// Create our 13 filters
+	make_filter( *output, size, 2, 1, 0 );
+	make_filter( *output, size, 4, 1, 1 );
+	make_filter( *output, size, 4, 2, 2 );
+	make_filter( *output, size, 6, 1, 3 );
+	make_filter( *output, size, 6, 2, 4 );
+	make_filter( *output, size, 6, 3, 5 );
+	make_filter( *output, size, 8, 1, 6 );
+	make_filter( *output, size, 8, 2, 7 );
+	make_filter( *output, size, 8, 3, 8 );
+	make_filter( *output, size, 10, 1, 9 );
+	make_filter( *output, size, 10, 2, 10 );
+	make_filter( *output, size, 10, 3, 11 );
+	make_filter( *output, size, 10, 4, 12 );
+
+	// All done, return the answer
+	return output;
+}
+
 void grabCutInitShrunk( InputArray _img, InputOutputArray _mask, Rect _rect,
-                  int iterCount, int mode )
+                  int iterCount )
 {
 	const int by = 10;
+	const int filter_size = 49;
 
 	// Standard null checking procedure
     if( _img.empty() )
@@ -1165,37 +1268,56 @@ void grabCutInitShrunk( InputArray _img, InputOutputArray _mask, Rect _rect,
         CV_Error( CV_StsBadArg, "image mush have CV_8UC3 type" );
 
 	// Initialization
-    Mat* img6d = shrink(_img.getMat(), by); // Shrunk image
-	Mat* img = round_shrunk(*img6d);
+	Mat* img_cg = grey_and_expand( _img.getMat() ); //14 CHANNELS Dimensional Grey
+	Mat* filters = create_filters( filter_size );
+
+	// Applying filters
+	Mat img_cg_v[CHANNELS]; // Vector of values for filter2D usage
+	Mat filters_v[FILTERS]; // Vector of filters for filter2D usage
+	Mat dst; // Temporary value for filter2D function
+	split( *img_cg, img_cg_v );
+	split( *filters, filters_v );
+	for (int i = 0; i < FILTERS; i++)
+	{
+		// Apply the filter. Default values are:
+		// Point(-1,-1) (center of filter), delta=0.0, border handling is REFLECT_101
+		filter2D( img_cg_v[i+1], dst, CV_64F, filters_v[i] );
+		// Copy our answer
+		dst.copyTo(img_cg_v[i+1]);
+	}
+	// Build back our final solution
+	merge( img_cg_v, CHANNELS, *img_cg );
+
+    Mat* img_dc = shrink( *img_cg, by ); // Image double channels (shrunk)
     Mat mask; // Shrunk mask
 	Mat& out_mask = _mask.getMatRef();
 	Rect rect = Rect(_rect.x/by, _rect.y/by,
-					min((int)ceil((double)_rect.width/(double)by), img->cols-1), //Max possible amount of rectangles
-					min((int)ceil((double)_rect.height/(double)by), img->rows-1)); // Shrunk rect
+					min((int)ceil((double)_rect.width/(double)by), img_dc->cols-1), //Max possible amount of rectangles
+					min((int)ceil((double)_rect.height/(double)by), img_dc->rows-1)); // Shrunk rect
     Mat bgdModel = Mat(); // Our local model
     Mat fgdModel = Mat(); // Same as above
 
 	// Building GMMs for local models
-    GMM6d bgdGMM( bgdModel ), fgdGMM( fgdModel );
-    Mat compIdxs( img->size(), CV_32SC1 );
+    GMM_dc bgdGMM( bgdModel ), fgdGMM( fgdModel );
+    Mat compIdxs( img_dc->size(), CV_32SC1 );
 
 	// Here we always initialize with rect
-    initMaskWithRect( mask, img->size(), rect );
-    initGMMs6d( *img6d, mask, bgdGMM, fgdGMM );
+    initMaskWithRect( mask, img_dc->size(), rect );
+	// BREAK: Program breaks on initGMMs if the area is extremely small - K means algorythm breaks
+    initGMMs_dc( *img_dc, mask, bgdGMM, fgdGMM );
 
 	// Check mask for any errors
-    if( mode == GC_EVAL )
-        checkMask( *img, mask );
+    checkMask( *img_dc, mask );
 
 	// Simple parameters of our algorythm, used for setting up edge flows
     const double gamma = 50; // Gamma seems to be just a parameter for lambda, here 50
     const double lambda = 9*gamma; // Lambda is simply a max value for flow, be it from source or to target, here 450
-    const double beta = calcBeta6d( *img6d ); // Beta is a parameter, here 1/(2*avg(sqr(||color[i] - color[j]||)))
+    const double beta = calcBeta_dc( *img_dc ); // Beta is a parameter, here 1/(2*avg(sqr(||color[i] - color[j]||)))
 										 // 1 / 2*average distance in colors between neighbours
 
 	// NWeights, the flow capacity of our edges
     Mat leftW, upleftW, upW, uprightW;
-    calcNWeights6d( *img6d, leftW, upleftW, upW, uprightW, beta, gamma );
+    calcNWeights_dc( *img_dc, leftW, upleftW, upW, uprightW, beta, gamma );
 
 	// The main loop
     for( int i = 0; i < iterCount; i++ )
@@ -1205,15 +1327,16 @@ void grabCutInitShrunk( InputArray _img, InputOutputArray _mask, Rect _rect,
 		
 		// Check the image at mask, and depending if it's FGD or BGD, return the number of component that suits it most.
 		// Answer (component numbers) is stored in compIdxs, it does not store anything else
-        assignGMMsComponents6d( *img6d, mask, bgdGMM, fgdGMM, compIdxs );
+        assignGMMsComponents_dc( *img_dc, mask, bgdGMM, fgdGMM, compIdxs );
 
 		// This one adds samples to proper GMMs based on best component
 		// Strengthens our predictions?
-        learnGMMs6d( *img6d, mask, compIdxs, bgdGMM, fgdGMM );
+		// BREAK: The program breaks on end learning part when it checks if Cov matrix is inversable
+        learnGMMs_dc( *img_dc, mask, compIdxs, bgdGMM, fgdGMM );
 
 		// NOTE: As far as I can tell these two will be primarily worked upon
 		// Construct grapg cut graph, including initializing s and t values for source and sink flows
-        constructGCGraph6d( *img6d, mask, bgdGMM, fgdGMM, lambda, leftW, upleftW, upW, uprightW, graph );
+        constructGCGraph_dc( *img_dc, mask, bgdGMM, fgdGMM, lambda, leftW, upleftW, upW, uprightW, graph );
 
 		// Using max flow algorythm calculate segmentation
         estimateSegmentation( graph, mask );
@@ -1223,8 +1346,10 @@ void grabCutInitShrunk( InputArray _img, InputOutputArray _mask, Rect _rect,
 	expandShrunkMat(mask, out_mask, by);
 	
 	// Clean-up
-	delete img;
-	delete img6d;
+	delete img_dc;
+	
+	delete filters;
+	delete img_cg;
 }
 
 // Main grabcut algorythm
@@ -1234,7 +1359,7 @@ void cv::grabCut( InputArray _img, InputOutputArray _mask, Rect rect,
 {
 	if (mode == GC_INIT_SHRUNK)
 	{
-		grabCutInitShrunk(_img, _mask, rect, iterCount, mode);
+		grabCutInitShrunk( _img, _mask, rect, iterCount );
 		return;
 	}
 
